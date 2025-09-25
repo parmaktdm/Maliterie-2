@@ -25,7 +25,6 @@
     overflow-x:hidden;
   }
 
-  /* ========= HEADER : uniquement l'image (réduite) ========= */
   header{
     width:100%;
     padding:8px 0 0;
@@ -33,19 +32,18 @@
     position:relative; z-index:2;
   }
   .hero-logo{
-    max-width:clamp(260px, 55vw, 520px); /* largeur nettement réduite */
+    max-width:clamp(260px, 55vw, 520px);
     margin:0 auto;
     padding:0 3vw;
   }
   .hero-logo img{
     display:block; width:100%;
-    height:auto;                 /* conserve les proportions */
-    max-height:clamp(64px, 14vw, 110px); /* limite la hauteur */
-    object-fit:contain;          /* pas de recadrage */
+    height:auto;
+    max-height:clamp(64px, 14vw, 110px);
+    object-fit:contain;
     border:0; border-radius:0; box-shadow:none;
   }
 
-  /* ========= CARTE DU JEU ========= */
   .game{
     width:min(92vw, 560px); margin:20px auto; text-align:center;
     background:rgba(13,32,42,.92);
@@ -96,11 +94,9 @@
 </style>
 </head>
 
-<!-- Image de fond plein écran -->
 <body style="background: url('https://media.admagazine.fr/photos/65846400cb76969786b9660c/16:9/w_2560%2Cc_limit/1433133399') center / cover no-repeat fixed;">
 
   <header>
-    <!-- Logo seul, réduit -->
     <div class="hero-logo">
       <img
         src="https://www.maliterie.com/img/ma-literie-logo-17194172391.jpg"
@@ -151,12 +147,15 @@
 
     <button id="spinBtn">CLIQUER ICI </button>
     <div id="result" class="result" aria-live="polite"></div>
+
+    <!-- 🔊 Ton fichier MP3 pour gros gain -->
+    <audio id="bigWinAudio" src="./bigwin.mp3" preload="auto"></audio>
   </main>
 
 <script>
 /* ================== Données ================== */
 const gains = [
-  "-5%", "-10%", "-15%", "-20%", "0%",
+  "-5%", "-10%", "-15%", "-20%", "Mystere",
   "-10€", "-20€", "-50€", "-100€",
   "Oreiller"
 ];
@@ -173,10 +172,11 @@ const cursor=document.getElementById('cursor');
 const stage=document.getElementById('stage');
 const fx=document.getElementById('fx');
 const ctx=fx.getContext('2d');
+const bigWinEl=document.getElementById('bigWinAudio');
 
-/* ================== Audio ================== */
+/* ================== Audio de base ================== */
 let audioCtx=null;
-function initAudio(){ if(!audioCtx){ audioCtx = new (window.AudioContext||window.webkitAudioContext)(); } }
+function initAudio(){ if(!audioCtx){ audioCtx = new (window.AudioContext||window.webkitAudioContext)(); } if(audioCtx.state==='suspended') audioCtx.resume(); }
 function blip(fs=650, fe=1150, d=0.035, v=0.16){
   if(!audioCtx) return;
   const t0 = audioCtx.currentTime;
@@ -225,12 +225,10 @@ function fanfare(){
   sh.start(tS); sh.stop(tS+0.55);
 }
 
-/* ====== Musique triste pour 0% ====== */
+/* ====== Musique triste pour 0% (si jamais ajouté) ====== */
 function sadMelody(){
   if(!audioCtx) return;
   const t = audioCtx.currentTime;
-
-  // Pad mineur (A minor) qui s'éteint
   const padNotes = [220, 261.63, 329.63]; // A3, C4, E4
   padNotes.forEach((freq, i) => {
     const o = audioCtx.createOscillator();
@@ -243,23 +241,167 @@ function sadMelody(){
     o.connect(g); g.connect(audioCtx.destination);
     o.start(t + i*0.02); o.stop(t + 1.45);
   });
-
-  // Mélodie descendante
   const lead = audioCtx.createOscillator();
   const lg = audioCtx.createGain();
   lead.type = 'triangle';
-  lead.frequency.setValueAtTime(660, t);                 // E5
-  lead.frequency.exponentialRampToValueAtTime(220, t+1.2); // vers A3
+  lead.frequency.setValueAtTime(660, t);
+  lead.frequency.exponentialRampToValueAtTime(220, t+1.2);
   lg.gain.setValueAtTime(0.0001, t);
   lg.gain.linearRampToValueAtTime(0.18, t + 0.08);
   lg.gain.exponentialRampToValueAtTime(0.0001, t + 1.25);
   lead.connect(lg); lg.connect(audioCtx.destination);
   lead.start(t); lead.stop(t + 1.3);
 }
+function isZeroPercentPrize(val){ return /^\s*[-+]?0%\s*$/.test(String(val).trim()); }
 
-/* Helper: détecte 0% avec ou sans signe */
-function isZeroPercentPrize(val){
-  return /^\s*[-+]?0%\s*$/.test(String(val).trim());
+/* ====== Bus master (compresseur) ====== */
+let masterBus = null;
+function getMasterBus(){
+  if(!audioCtx) return null;
+  if(masterBus) return masterBus;
+  const comp = audioCtx.createDynamicsCompressor();
+  comp.threshold.value = -12; comp.knee.value = 20; comp.ratio.value = 8;
+  comp.attack.value = 0.003; comp.release.value = 0.15;
+  const masterGain = audioCtx.createGain();
+  masterGain.gain.value = 0.9;
+  comp.connect(masterGain); masterGain.connect(audioCtx.destination);
+  masterBus = { comp, masterGain }; return masterBus;
+}
+
+/* ====== Tones “musicaux” + petite réverbe (échos) ====== */
+function playTone(freq, t, dur, {type='triangle', vol=1, a=0.01, d=0.08, s=0.7, r=0.2}={}){
+  if(!audioCtx) return;
+  const bus=getMasterBus(); if(!bus) return;
+
+  const o=audioCtx.createOscillator();
+  const g=audioCtx.createGain();
+  o.type=type; o.frequency.setValueAtTime(freq, t);
+
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t+a);
+  g.gain.exponentialRampToValueAtTime(vol*s, t+a+d);
+  g.gain.setValueAtTime(vol*s, t+Math.max(0, dur-r));
+  g.gain.exponentialRampToValueAtTime(0.0001, t+dur);
+
+  o.connect(g); g.connect(bus.comp);
+
+  [0.16,0.30].forEach(delayTime=>{
+    const delay=audioCtx.createDelay(); delay.delayTime.value=delayTime;
+    const dg=audioCtx.createGain(); dg.gain.value=vol*0.25;
+    g.connect(delay); delay.connect(dg); dg.connect(bus.comp);
+  });
+
+  o.start(t); o.stop(t+dur+0.03);
+}
+
+/* ====== Clochette brillante ====== */
+function bell(t, vol=0.7){
+  if(!audioCtx) return;
+  const bus=getMasterBus(); if(!bus) return;
+
+  const len=audioCtx.sampleRate*0.22;
+  const buf=audioCtx.createBuffer(1,len,audioCtx.sampleRate);
+  const data=buf.getChannelData(0);
+  for(let i=0;i<len;i++) data[i]=(Math.random()*2-1)*Math.exp(-i/2800);
+  const src=audioCtx.createBufferSource(); src.buffer=buf;
+
+  const hp=audioCtx.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=2500;
+  const bp=audioCtx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=8000; bp.Q.value=7;
+
+  const g=audioCtx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t+0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, t+0.18);
+
+  src.connect(hp); hp.connect(bp); bp.connect(g); g.connect(bus.comp);
+  src.start(t); src.stop(t+0.22);
+
+  const o=audioCtx.createOscillator(), og=audioCtx.createGain();
+  o.type='sine'; o.frequency.setValueAtTime(1760, t); // A6
+  og.gain.setValueAtTime(0.0001, t);
+  og.gain.exponentialRampToValueAtTime(vol*0.7, t+0.01);
+  og.gain.exponentialRampToValueAtTime(0.0001, t+0.12);
+  o.connect(og); og.connect(bus.comp);
+  o.start(t); o.stop(t+0.14);
+}
+
+/* ====== Anciennes aides Noël (gardées pour compatibilité) ====== */
+function scheduleTone(freq, tStart, dur, { type='triangle', a=0.01, d=0.08, s=0.6, r=0.12, peak=0.9 }={}){
+  if(!audioCtx) return;
+  const bus = getMasterBus(); if(!bus) return;
+  const o = audioCtx.createOscillator(); const g = audioCtx.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, tStart);
+  g.gain.setValueAtTime(0.0001, tStart);
+  g.gain.exponentialRampToValueAtTime(peak, tStart + a);
+  g.gain.exponentialRampToValueAtTime(peak * s, tStart + a + d);
+  g.gain.setValueAtTime(peak * s, tStart + Math.max(0, dur - r));
+  g.gain.exponentialRampToValueAtTime(0.0001, tStart + dur);
+  o.connect(g); g.connect(bus.comp);
+  o.start(tStart); o.stop(tStart + dur + 0.02);
+}
+function sleighBell(tStart, repeats=4, interval=0.35){
+  if(!audioCtx) return;
+  for(let i=0;i<repeats;i++) bell(tStart + i*interval, 0.6);
+}
+
+/* ====== Petite fanfare (garde) ====== */
+function xmasWinShort(){
+  if(!audioCtx) return;
+  const t0 = audioCtx.currentTime;
+  const arpeg = [523.25, 659.25, 783.99, 1046.5]; // C5 E5 G5 C6
+  arpeg.forEach((f,i)=>scheduleTone(f, t0+i*0.12, 0.28, {type:'square', peak:0.95}));
+  const tF = t0 + 0.55;
+  [523.25, 659.25, 783.99].forEach(f=>scheduleTone(f, tF, 0.7, {type:'triangle', peak:1.0}));
+  sleighBell(t0, 5, 0.15);
+}
+
+/* ====== Nouvelle mélodie de gain (fallback) ====== */
+function xmasWinJingle(){
+  if(!audioCtx) return;
+  const t0 = audioCtx.currentTime + 0.04;
+
+  [261.63, 329.63, 392.00, 523.25].forEach(f => {
+    playTone(f, t0, 1.25, {type:'triangle', vol:0.8, a:0.01, d:0.10, s:0.8, r:0.25});
+  });
+  playTone(130.81, t0, 1.6, {type:'sine', vol:0.55, a:0.02, d:0.15, s:0.7, r:0.35});
+  playTone(196.00, t0+0.42, 1.1, {type:'sine', vol:0.45, a:0.02, d:0.12, s:0.7, r:0.30});
+
+  const motif = [523.25, 659.25, 783.99]; // C5, E5, G5
+  motif.forEach((f,i)=>{
+    const t = t0 + 0.34*i;
+    playTone(f, t, 0.52, {type:'triangle', vol:1.0, a:0.006, d:0.06, s:0.55, r:0.14});
+    playTone(f*2, t, 0.40, {type:'sine', vol:0.42, a:0.004, d:0.08, s:0.5, r:0.12});
+    bell(t, 0.7);
+  });
+
+  const tf = t0 + 1.08;
+  [523.25, 659.25, 783.99, 1046.5].forEach(f=>{
+    playTone(f, tf, 1.05, {type:'triangle', vol:0.95, a:0.008, d:0.12, s:0.75, r:0.30});
+  });
+  bell(tf, 0.8);
+}
+
+/* ====== ▶️ TA piste MP3 pour gros gain ====== */
+function primeBigWin(){
+  // “Réveille” l’audio au premier clic pour éviter les blocages
+  if(!bigWinEl) return;
+  bigWinEl.muted = true;
+  const p = bigWinEl.play();
+  if(p && p.then){
+    p.then(()=>{
+      bigWinEl.pause(); bigWinEl.currentTime = 0; bigWinEl.muted = false;
+    }).catch(()=>{ bigWinEl.muted = false; });
+  }
+}
+function playBigWin(){
+  if(!bigWinEl){ xmasWinJingle(); return; }
+  try{
+    bigWinEl.currentTime = 0;
+    const prom = bigWinEl.play();
+    if(prom && prom.catch){ prom.catch(()=> xmasWinJingle()); }
+  }catch(e){
+    xmasWinJingle(); // fallback si erreur
+  }
 }
 
 /* ================== SVG helpers ================== */
@@ -360,6 +502,11 @@ function formatGain(g) {
   return g;
 }
 
+/* Détection d’un gros gain -> TA musique */
+function isBigPrize(prize){
+  return /-100€/.test(prize) || /Mystere/i.test(prize) || /Oreiller/i.test(prize);
+}
+
 function spin(){
   if(spinning) return;
   spinning = true;
@@ -369,6 +516,9 @@ function spin(){
     firstSpinDone = true;
     spinBtn.classList.add('hidden');
     setTimeout(()=>{ spinBtn.style.display='none'; }, 320);
+
+    // Prime l'audio gros gain au premier clic
+    primeBigWin();
   }
 
   resultEl.textContent='';
@@ -392,7 +542,13 @@ function spin(){
 
   setTimeout(()=>{
     burstAt(bx, by, ['#2e5bb7','#ffffff','#e03636']);
-    if (isZeroPercentPrize(prize)) { sadMelody(); } else { fanfare(); }
+    if (isZeroPercentPrize(prize)) {
+      sadMelody();
+    } else if (isBigPrize(prize)) {
+      playBigWin();            // 🔊 joue bigwin.mp3
+    } else {
+      fanfare();               // fanfare standard
+    }
     resultEl.innerHTML = `<span class="pop">🎉 Vous avez gagné : ${formatGain(prize)}</span>`;
     spinning = false;
   }, 4040);
